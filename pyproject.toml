@@ -1,0 +1,22 @@
+[build-system] # 指定安装项目所需的构建工具。
+requires = ["setuptools>=68"] # 安装时需要 setuptools。
+build-backend = "setuptools.build_meta" # 使用 setuptools 构建 Python 包。
+
+[project] # 记录项目的基本信息。
+name = "plan2graph" # 安装后的项目名称。
+version = "0.0.1" # 当前工程骨架的版本号。
+description = "Plan2Graph 最小命令行骨架" # 简短说明。
+requires-python = ">=3.11" # 要求 Python 3.11 或更新版本。
+dependencies = [] # 当前运行程序不需要第三方库。
+
+[project.optional-dependencies] # 只在需要测试时安装的工具。
+test = ["pytest>=8,<10"] # pytest 用于运行自动测试。
+
+[project.scripts] # 定义安装后可输入的终端命令。
+plan2graph = "plan2graph.cli:main" # 将命令连接到以后创建的 main 函数。
+
+[tool.setuptools.packages.find] # 告诉构建工具去哪里找程序。
+where = ["src"] # 程序将放在 src 文件夹下。
+
+[tool.pytest.ini_options] # 配置测试工具。
+testpaths = ["tests"] # 测试文件将放在 tests 文件夹下。
