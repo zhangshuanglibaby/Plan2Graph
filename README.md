@@ -1,6 +1,6 @@
 # Plan2Graph：最小 Python 工程骨架
 
-目前只能运行 `plan2graph --help`，还不能生成任务图，也不会调用 DeepSeek。
+命令目前仍只能显示帮助；已定义任务图数据结构，但还不能生成任务图，也不会调用 DeepSeek。
 
 ## 首次安装
 
@@ -24,7 +24,7 @@ plan2graph --help
 python -m pytest -q
 ```
 
-看到 `3 passed` 表示当前三个基础测试通过。用完可输入 `deactivate` 退出虚拟环境。
+看到 `4 passed` 表示当前三个基础测试通过。用完可输入 `deactivate` 退出虚拟环境。
 
 ## 文件用途
 
@@ -33,3 +33,6 @@ python -m pytest -q
 - `src/plan2graph/cli.py`：目前只提供帮助信息的命令入口。
 - `tests/test_cli.py`：不联网的基础测试。
 - `.gitignore`：避免将虚拟环境和缓存纳入 Git 跟踪。
+- `doc/graph_data_contract.md`: 字段约定
+- `src/plan2graph/models.py`: 内部数据结构
+- `tests/test_models.py`: 数据结构测试
