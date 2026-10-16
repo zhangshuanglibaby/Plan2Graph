@@ -53,3 +53,5 @@ def test_json_text_is_accepted() -> None:  # 检查符合约定的 JSON 文本�
 def test_incomplete_json_is_rejected() -> None:  # 检查不完整的 JSON 文本会报错。
   with pytest.raises(ValidationError):  # 捕获 JSON 解析失败产生的校验错误。
     ModelResult.model_validate_json('{"tasks": [')  # 故意提供尚未写完的 JSON。
+
+    
