@@ -1,7 +1,7 @@
 import pytest  # 使用 pytest 检查预期出现的错误。
 
-from plan2graph.normalize import build_tasks_and_ref_map, find_task_quote_position  # 导入引文检查和任务编号函数。
-from plan2graph.response_models import ModelTask  # 创建供测试使用的模型任务。
+from plan2graph.normalize import build_graph_relations, build_tasks_and_ref_map, find_task_quote_position, map_relation_to_graph  # 导入关系去重、任务处理和引文检查函数。
+from plan2graph.response_models import ModelRelation, ModelTask  # 创建测试所需的模型任务和关系。
 
 
 """检查能找到引文的位置。"""
@@ -88,3 +88,30 @@ def test_repeated_build_is_stable_and_keeps_all_tasks() -> None:  # 检查相同
   second = build_tasks_and_ref_map(plan_text, model_tasks)  # 第二次处理相同输入。
   assert first == second  # 检查两次产生完全相同的任务和编号对照。
   assert [(task.id, task.first_position) for task in first[0]] == [("T1", 0), ("T2", 3)]  # 检查两个任务及原文位置都保留下来。
+
+
+"""检查关系方向和任务编号转换。"""
+def test_relation_direction_uses_task_ids() -> None:  # 检查关系方向和任务编号转换。
+  plan_text = "任务A依赖任务B"  # 原文表示 B 是 A 的前置任务。
+  model_tasks = [  # 准备原文中的两个任务。
+      ModelTask(ref="a", title="任务A", source_quote="任务A"),  # A 在原文中先出现，编号应为 T1。
+      ModelTask(ref="b", title="任务B", source_quote="任务B"),  # B 在原文中后出现，编号应为 T2。
+  ]
+  _, ref_to_id = build_tasks_and_ref_map(plan_text, model_tasks)  # 取得临时 ref 与任务编号的对照。
+  model_relation = ModelRelation(before="b", after="a", kind="hard", source_quote=plan_text, reason="原文明确依赖")  # 指明 B 必须先于 A。
+  graph_relation = map_relation_to_graph(model_relation, ref_to_id)  # 将关系两端换成任务编号。
+  assert (graph_relation.before, graph_relation.after, graph_relation.kind) == ("T2", "T1", "hard")  # 检查方向是 B 到 A。
+  assert graph_relation.source_quote == plan_text  # 检查引文仍被保留。
+
+
+"""检查任务合并后指向同一对节点的关系只保留一次。"""
+def test_duplicate_relations_after_task_merge_keep_first() -> None:  # 检查任务合并后指向同一对节点的关系只保留一次。
+  ref_to_id = {"setup": "T1", "api1": "T2", "api2": "T2"}  # 两个接口 ref 都指向合并后的 T2。
+  model_relations = [  # 准备两条转换后方向相同的确定依赖。
+    ModelRelation(before="setup", after="api1", kind="hard", source_quote="先完成基础再做接口", reason="第一处依据"),  # 第一条关系。
+    ModelRelation(before="setup", after="api2", kind="hard", source_quote="基础是接口前提", reason="第二处依据"),  # 第二条关系。
+  ]
+  graph_relations = build_graph_relations(model_relations, ref_to_id)  # 转换编号并去重。
+  assert len(graph_relations) == 1  # 检查只保留一条关系。
+  assert (graph_relations[0].before, graph_relations[0].after, graph_relations[0].kind) == ("T1", "T2", "hard")  # 检查方向和类型。
+  assert graph_relations[0].source_quote == "先完成基础再做接口"  # 检查保留先出现的关系引文。
