@@ -36,3 +36,9 @@ python -m pytest -q
 - `doc/graph_data_contract.md`: 字段约定
 - `src/plan2graph/models.py`: 内部数据结构
 - `tests/test_models.py`: 数据结构测试
+
+## 当前进度
+
+阶段 1.1 已建立模型输出的数据格式，并通过 11 项离线测试。`response_models.py` 使用 Pydantic 检查字段是否齐全、类型是否正确，以及 JSON 文本能否解析。
+
+这一步只检查数据格式；尚未检查任务引用是否真实存在、引用原文是否准确，也没有调用模型或生成任务图。

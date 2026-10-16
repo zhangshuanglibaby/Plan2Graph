@@ -41,3 +41,15 @@ def test_extra_field_is_rejected() -> None:  # 检查未约定的字段不能混
   with pytest.raises(ValidationError) as error:  # 捕获字段校验错误。
     ModelTask.model_validate({"ref": "a", "title": "订单接口", "source_quote": "实现订单接口", "duration": 3})  # 故意多加工期字段。
   assert error.value.errors()[0]["type"] == "extra_forbidden"  # 确认错误原因是多余字段。
+
+"""检查符合约定的 JSON 文本能被解析。"""
+def test_json_text_is_accepted() -> None:  # 检查符合约定的 JSON 文本能被解析。
+  text = '{"tasks":[{"ref":"a","title":"订单接口","source_quote":"实现订单接口"}],"relations":[]}'  # 准备完整的 JSON 文本。
+  result = ModelResult.model_validate_json(text)  # 将 JSON 文本解析为数据模型。
+  assert result.tasks[0].ref == "a"  # 确认任务引用被正确读取。
+
+
+"""检查不完整的 JSON 文本会报错。"""
+def test_incomplete_json_is_rejected() -> None:  # 检查不完整的 JSON 文本会报错。
+  with pytest.raises(ValidationError):  # 捕获 JSON 解析失败产生的校验错误。
+    ModelResult.model_validate_json('{"tasks": [')  # 故意提供尚未写完的 JSON。
