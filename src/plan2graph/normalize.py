@@ -2,7 +2,7 @@
 检查引文是否出现在原文中；后续再处理重复任务、稳定编号，以及临时 ref 到任务编号的映射
 """
 
-from plan2graph.models import GraphRelation, GraphTask  # 使用内部关系和任务的数据结构。
+from plan2graph.models import GraphRelation, GraphTask, SkippedRelation  # 使用内部任务、关系和跳过记录的数据结构。
 from plan2graph.response_models import ModelRelation, ModelTask  # 使用已通过字段校验的模型关系和任务。
 
 
@@ -43,27 +43,37 @@ def build_tasks_and_ref_map(plan_text: str, model_tasks: list[ModelTask]) -> tup
 
 
 
-"""把关系中的临时 ref 转成任务编号。"""
-def map_relation_to_graph(model_relation: ModelRelation, ref_to_id: dict[str, str]) -> GraphRelation:  # 把关系中的临时 ref 转成任务编号。
+"""将关系两端的临时 ref 转成任务编号。"""
+def map_relation_to_graph(model_relation: ModelRelation, ref_to_id: dict[str, str]) -> GraphRelation:  # 将关系两端的临时 ref 转成任务编号。
+  if model_relation.before not in ref_to_id:  # 检查前置任务是否存在。
+    raise ValueError(f"前置任务引用不存在：{model_relation.before}")  # 报告找不到的前置 ref。
+  if model_relation.after not in ref_to_id:  # 检查后续任务是否存在。
+    raise ValueError(f"后续任务引用不存在：{model_relation.after}")  # 报告找不到的后续 ref。
+  if model_relation.before == model_relation.after:  # 检查关系是否把同一个任务连向自己。
+    raise ValueError("任务不能依赖自身")  # 对直接自依赖给出明确错误。
   return GraphRelation(  # 建立使用稳定编号的内部关系。
-    before=ref_to_id[model_relation.before],  # 将前置任务的 ref 转成 T 编号。
-    after=ref_to_id[model_relation.after],  # 将后续任务的 ref 转成 T 编号。
-    kind=model_relation.kind,  # 保留确定依赖或待确认关系的类型。
-    source_quote=model_relation.source_quote,  # 保留原文引文。
-    reason=model_relation.reason,  # 保留关系依据或待确认原因。
+    before=ref_to_id[model_relation.before],  # 转换前置任务编号。
+    after=ref_to_id[model_relation.after],  # 转换后续任务编号。
+    kind=model_relation.kind,  # 保留关系类型。
+    source_quote=model_relation.source_quote,  # 保留关系引文。
+    reason=model_relation.reason,  # 保留关系依据。
   )
 
 
 
 """转换关系并去除同向同类型的重复项。"""
-def build_graph_relations(model_relations: list[ModelRelation], ref_to_id: dict[str, str]) -> tuple[GraphRelation, ...]:  # 转换关系并去除同向同类型的重复项。
-  graph_relations: list[GraphRelation] = []  # 保存最终保留的关系。
-  seen: set[tuple[str, str, str]] = set()  # 记录已出现的前置编号、后续编号和关系类型。
-  for model_relation in model_relations:  # 按模型返回的顺序逐条处理
-    graph_relation = map_relation_to_graph(model_relation, ref_to_id)  # 将临时 ref 换成任务编号。
+def build_graph_relations(model_relations: list[ModelRelation], ref_to_id: dict[str, str]) -> tuple[tuple[GraphRelation, ...], tuple[SkippedRelation, ...]]:  # 返回保留的关系和跳过记录。
+  graph_relations: list[GraphRelation] = []  # 保存可以继续处理的关系。
+  skipped_relations: list[SkippedRelation] = []  # 保存因任务合并而跳过的关系。
+  seen: set[tuple[str, str, str]] = set()  # 记录已出现的关系方向和类型。
+  for model_relation in model_relations:  # 按模型返回的顺序逐条处理。
+    graph_relation = map_relation_to_graph(model_relation, ref_to_id)  # 把临时 ref 换成任务编号。
+    if graph_relation.before == graph_relation.after:  # 检查不同 ref 合并后是否指向同一个任务。
+      skipped_relations.append(SkippedRelation(graph_relation, "任务合并后形成自依赖"))  # 保存未画出的关系及原因。
+      continue  # 不把这条自依赖加入可展示的关系。
     key = (graph_relation.before, graph_relation.after, graph_relation.kind)  # 用方向和类型识别重复关系。
-    if key in seen:  # 检查同向同类型的关系是否已经保留。
-      continue  # 重复时保留先出现的关系及其引文。
+    if key in seen:  # 检查是否已保留相同关系。
+      continue  # 重复时保留先出现的关系。
     seen.add(key)  # 记录这条关系已经出现。
-    graph_relations.append(graph_relation)  # 保存第一次出现的关系
-  return tuple(graph_relations)  # 返回按原顺序保留的关系。
+    graph_relations.append(graph_relation)  # 保存第一次出现的关系。
+  return tuple(graph_relations), tuple(skipped_relations)  # 分别返回保留结果和跳过记录。。

@@ -111,7 +111,43 @@ def test_duplicate_relations_after_task_merge_keep_first() -> None:  # 检查任
     ModelRelation(before="setup", after="api1", kind="hard", source_quote="先完成基础再做接口", reason="第一处依据"),  # 第一条关系。
     ModelRelation(before="setup", after="api2", kind="hard", source_quote="基础是接口前提", reason="第二处依据"),  # 第二条关系。
   ]
-  graph_relations = build_graph_relations(model_relations, ref_to_id)  # 转换编号并去重。
+  graph_relations, skipped_relations = build_graph_relations(model_relations, ref_to_id)  # 分别接收保留的关系和跳过记录。
   assert len(graph_relations) == 1  # 检查只保留一条关系。
   assert (graph_relations[0].before, graph_relations[0].after, graph_relations[0].kind) == ("T1", "T2", "hard")  # 检查方向和类型。
   assert graph_relations[0].source_quote == "先完成基础再做接口"  # 检查保留先出现的关系引文。
+  assert skipped_relations == ()  # 普通重复关系去重不产生自依赖跳过记录。
+
+
+"""检查找不到前置任务时会明确报错。"""
+def test_unknown_before_ref_is_rejected() -> None:  # 检查找不到前置任务时会明确报错。
+  model_relation = ModelRelation(before="missing", after="a", kind="hard", source_quote="任务A依赖另一任务", reason="原文提到依赖")  # 准备前置 ref 不存在的关系。
+  with pytest.raises(ValueError, match="前置任务引用不存在：missing"):  # 预期错误指出缺少的前置 ref。
+    map_relation_to_graph(model_relation, {"a": "T1"})  # 尝试转换这条关系。
+
+
+
+"""检查找不到后续任务时会明确报错。"""
+def test_unknown_after_ref_is_rejected() -> None:  # 检查找不到后续任务时会明确报错。
+  model_relation = ModelRelation(before="a", after="missing", kind="hard", source_quote="另一任务依赖任务A", reason="原文提到依赖")  # 准备后续 ref 不存在的关系。
+  with pytest.raises(ValueError, match="后续任务引用不存在：missing"):  # 预期错误指出缺少的后续 ref。
+    map_relation_to_graph(model_relation, {"a": "T1"})  # 尝试转换这条关系。
+
+
+
+"""检查任务不能直接依赖自己。"""
+def test_direct_self_dependency_is_rejected() -> None:  # 检查任务不能直接依赖自己。
+  model_relation = ModelRelation(before="a", after="a", kind="hard", source_quote="任务A依赖任务A", reason="测试自依赖")  # 两端使用同一个临时 ref。
+  with pytest.raises(ValueError, match="任务不能依赖自身"):  # 预期收到明确的自依赖错误。
+    map_relation_to_graph(model_relation, {"a": "T1"})  # 尝试将自依赖转换成图关系。
+
+
+
+"""检查任务合并造成的自依赖会被跳过。"""
+def test_relation_becomes_self_dependency_after_task_merge() -> None:  # 检查任务合并造成的自依赖会被跳过。
+  ref_to_id = {"api1": "T1", "api2": "T1"}  # 两个不同 ref 指向合并后的同一个任务。
+  model_relation = ModelRelation(before="api1", after="api2", kind="hard", source_quote="接口A依赖接口A", reason="测试合并结果")  # 准备合并前两端不同的关系。
+  graph_relations, skipped_relations = build_graph_relations([model_relation], ref_to_id)  # 转换关系并取得跳过记录。
+  assert graph_relations == ()  # 自依赖不能进入待展示的关系。
+  assert len(skipped_relations) == 1  # 检查留下了一条跳过记录。
+  assert (skipped_relations[0].relation.before, skipped_relations[0].relation.after) == ("T1", "T1")  # 检查记录中的两端编号。
+  assert skipped_relations[0].skip_reason == "任务合并后形成自依赖"  # 检查跳过原因明确。
