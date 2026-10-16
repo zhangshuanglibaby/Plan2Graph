@@ -1,7 +1,7 @@
 import pytest  # 使用 pytest 检查预期出现的错误。
 
-from plan2graph.normalize import build_graph_relations, build_tasks_and_ref_map, find_task_quote_position, map_relation_to_graph  # 导入关系去重、任务处理和引文检查函数。
-from plan2graph.response_models import ModelRelation, ModelTask  # 创建测试所需的模型任务和关系。
+from plan2graph.normalize import build_graph_relations, build_plan_graph, build_tasks_and_ref_map, find_task_quote_position, map_relation_to_graph, validate_relation_quotes  # 导入任务图构建及各项检查函数。
+from plan2graph.response_models import ModelRelation, ModelResult, ModelTask  # 导入测试所需的结构化数据类型。
 
 
 """检查能找到引文的位置。"""
@@ -151,3 +151,68 @@ def test_relation_becomes_self_dependency_after_task_merge() -> None:  # 检查�
   assert len(skipped_relations) == 1  # 检查留下了一条跳过记录。
   assert (skipped_relations[0].relation.before, skipped_relations[0].relation.after) == ("T1", "T1")  # 检查记录中的两端编号。
   assert skipped_relations[0].skip_reason == "任务合并后形成自依赖"  # 检查跳过原因明确。
+
+
+
+
+
+"""原文中存在的关系引文应通过检查。"""
+def test_relation_quote_in_plan_is_accepted() -> None:  # 原文中存在的关系引文应通过检查。
+  text = "任务A依赖任务B"  # 准备原计划文字。
+  relation = ModelRelation(before="b", after="a", kind="hard", source_quote=text, reason="明确依赖")  # 准备引用原文的关系。
+  validate_relation_quotes(text, [relation])  # 不抛出错误就表示检查通过。
+
+
+"""空白关系引文应被拒绝。"""
+def test_blank_relation_quote_is_rejected() -> None:  # 空白关系引文应被拒绝。
+  relation = ModelRelation(before="a", after="b", kind="hard", source_quote="   ", reason="测试")  # 准备只有空格的引文。
+  with pytest.raises(ValueError, match="关系引文不能为空"):  # 预期收到空引文错误。
+    validate_relation_quotes("任务A依赖任务B", [relation])  # 检查这条关系。
+
+
+"""不在原文中的关系引文应被拒绝。"""
+def test_relation_quote_not_in_plan_is_rejected() -> None:  # 不在原文中的关系引文应被拒绝。
+  relation = ModelRelation(before="a", after="b", kind="hard", source_quote="不存在的依赖", reason="测试")  # 准备虚构的引文。
+  with pytest.raises(ValueError, match="关系引文不在原文中"):  # 预期收到引文不存在的错误。
+    validate_relation_quotes("任务A依赖任务B", [relation])  # 用原计划检查这条关系。
+
+
+
+
+
+"""
+检查完整的离线处理流程。
+"""
+def test_build_plan_graph_connects_the_steps() -> None:  # 检查完整的离线处理流程。
+  text = "编写文档依赖完成接口"  # 原文明确指出文档依赖接口。
+  result = ModelResult(  # 手工构造结构化结果，不调用模型。
+    tasks=[  # 故意让任务列表顺序与原文顺序相反。
+      ModelTask(ref="api", title="完成接口", source_quote="完成接口"),  # 接口任务在原文中靠后。
+      ModelTask(ref="doc", title="编写文档", source_quote="编写文档"),  # 文档任务在原文中靠前。
+    ],  # 结束任务列表。
+    relations=[  # 准备一条有原文依据的硬依赖。
+      ModelRelation(before="api", after="doc", kind="hard", source_quote=text, reason="文档依赖接口"),  # 接口是文档的前置任务。
+    ],  # 结束关系列表。
+  )  # 结束结构化结果。
+  graph = build_plan_graph(text, result)  # 运行统一入口。
+  assert [(task.id, task.title) for task in graph.tasks] == [("T1", "编写文档"), ("T2", "完成接口")]  # 编号按原文位置分配。
+  assert [(item.before, item.after, item.kind) for item in graph.relations] == [("T2", "T1", "hard")]  # 关系方向指向依赖方。
+  assert graph.skipped_relations == ()  # 这份输入没有需要跳过的关系。
+
+
+
+"""
+检查统一入口不会漏掉关系引文校验。
+"""
+def test_build_plan_graph_rejects_fake_relation_quote() -> None:  # 检查统一入口不会漏掉关系引文校验。
+  result = ModelResult(  # 手工准备一份结构化结果。
+    tasks=[  # 两个任务都能在原文中找到。
+      ModelTask(ref="a", title="任务A", source_quote="任务A"),  # 第一个任务。
+      ModelTask(ref="b", title="任务B", source_quote="任务B"),  # 第二个任务。
+    ],  # 结束任务列表。
+    relations=[  # 准备一条引用了虚构文字的关系。
+      ModelRelation(before="b", after="a", kind="hard", source_quote="不存在的关系", reason="测试"),  # 关系引文不在原文中。
+    ],  # 结束关系列表。
+  )  # 结束结构化结果。
+  with pytest.raises(ValueError, match="关系引文不在原文中"):  # 预期统一入口报告引文错误。
+    build_plan_graph("任务A依赖任务B", result)  # 尝试构建任务图。

@@ -1,13 +1,23 @@
 """
 检查引文是否出现在原文中；后续再处理重复任务、稳定编号，以及临时 ref 到任务编号的映射
+
+负责整理数据，例如把临时引用换成 T1、T2，合并重复任务、处理重复关系。
 """
 
-from plan2graph.models import GraphRelation, GraphTask, SkippedRelation  # 使用内部任务、关系和跳过记录的数据结构。
-from plan2graph.response_models import ModelRelation, ModelTask  # 使用已通过字段校验的模型关系和任务。
+from plan2graph.models import GraphRelation, GraphTask, PlanGraph, SkippedRelation  # 使用任务图及其组成部分的数据结构。
+from plan2graph.response_models import ModelRelation, ModelResult, ModelTask  # 使用已解析的模型结果、任务和关系。
+from plan2graph.validate import resolve_candidate_relations  # 使用候选关系和图结构检查。
 
 
 
-"""查找任务引文在原计划中首次出现的位置"""
+"""
+查找任务引文在原计划中首次出现的位置
+输入：
+  - plan_text: 原计划文本
+  - source_quote: 任务引文
+输出：
+  - 任务引文在原计划中首次出现的位置
+"""
 def find_task_quote_position(plan_text: str, source_quote: str) -> int:  # 查找任务引文在原计划中首次出现的位置
   if not source_quote.strip():  # 拒绝空字符串或只有空白的引文。
     raise ValueError("任务引文不能为空")  # 告诉调用方引文缺少内容。
@@ -18,7 +28,15 @@ def find_task_quote_position(plan_text: str, source_quote: str) -> int:  # 查�
 
 
 
-"""建立去重后的任务和 ref 对照表。"""
+"""
+建立去重后的任务和 ref 对照表
+输入
+  - plan_text: 原计划文本
+  - model_tasks: 模型任务列表
+输出：
+  - 去重后的任务列表
+  - ref 对照表
+"""
 def build_tasks_and_ref_map(plan_text: str, model_tasks: list[ModelTask]) -> tuple[tuple[GraphTask, ...], dict[str, str]]:  # 建立去重后的任务和 ref 对照表。
   located: list[tuple[int, int, ModelTask]] = []  # 暂存原文位置、原列表顺序和任务。
   for index, task in enumerate(model_tasks):  # 逐个处理模型给出的任务。
@@ -43,7 +61,14 @@ def build_tasks_and_ref_map(plan_text: str, model_tasks: list[ModelTask]) -> tup
 
 
 
-"""将关系两端的临时 ref 转成任务编号。"""
+"""
+将关系两端的临时 ref 转成任务编号
+输入：
+  - model_relation: 模型关系
+  - ref_to_id: ref 对照表
+输出：
+  - 转换后的关系
+"""
 def map_relation_to_graph(model_relation: ModelRelation, ref_to_id: dict[str, str]) -> GraphRelation:  # 将关系两端的临时 ref 转成任务编号。
   if model_relation.before not in ref_to_id:  # 检查前置任务是否存在。
     raise ValueError(f"前置任务引用不存在：{model_relation.before}")  # 报告找不到的前置 ref。
@@ -61,7 +86,15 @@ def map_relation_to_graph(model_relation: ModelRelation, ref_to_id: dict[str, st
 
 
 
-"""转换关系并去除同向同类型的重复项。"""
+"""
+转换关系并去除同向同类型的重复项
+输入：
+  - model_relations: 模型关系列表
+  - ref_to_id: ref 对照表
+输出：
+  - 保留的关系列表
+  - 跳过记录列表
+"""
 def build_graph_relations(model_relations: list[ModelRelation], ref_to_id: dict[str, str]) -> tuple[tuple[GraphRelation, ...], tuple[SkippedRelation, ...]]:  # 返回保留的关系和跳过记录。
   graph_relations: list[GraphRelation] = []  # 保存可以继续处理的关系。
   skipped_relations: list[SkippedRelation] = []  # 保存因任务合并而跳过的关系。
@@ -77,3 +110,41 @@ def build_graph_relations(model_relations: list[ModelRelation], ref_to_id: dict[
     seen.add(key)  # 记录这条关系已经出现。
     graph_relations.append(graph_relation)  # 保存第一次出现的关系。
   return tuple(graph_relations), tuple(skipped_relations)  # 分别返回保留结果和跳过记录。。
+
+
+
+
+
+"""
+检查每条关系的引文是否来自原计划。
+输入：
+  - plan_text: 原计划文本
+  - model_relations: 模型关系列表
+输出：
+  - 无返回值
+"""
+def validate_relation_quotes(plan_text: str, model_relations: list[ModelRelation]) -> None:  # 检查每条关系的引文是否来自原计划。
+  for relation in model_relations:  # 逐条查看模型提出的关系。
+    if not relation.source_quote.strip():  # 拒绝空字符串或只有空白的引文。
+      raise ValueError("关系引文不能为空")  # 报告引文没有实际内容。
+    if relation.source_quote not in plan_text:  # 按原样查找引文，不改写原计划。
+      raise ValueError("关系引文不在原文中")  # 报告原计划中找不到这段话。
+
+
+
+
+
+"""
+将原计划和结构化结果整理成任务图。
+输入：
+  - plan_text: 原计划文本
+  - model_result: 模型结果
+输出：
+  - 任务图
+"""
+def build_plan_graph(plan_text: str, model_result: ModelResult) -> PlanGraph:  # 将原计划和结构化结果整理成任务图。
+   tasks, ref_to_id = build_tasks_and_ref_map(plan_text, model_result.tasks)  # 核对任务引文、去重并生成编号。
+   validate_relation_quotes(plan_text, model_result.relations)  # 核对每条关系的原文引文。
+   relations, merge_skips = build_graph_relations(model_result.relations, ref_to_id)  # 转换关系并记录合并造成的跳过项。
+   kept, cycle_skips = resolve_candidate_relations(tasks, relations)  # 检查硬依赖并筛选候选关系。
+   return PlanGraph(tasks=tasks, relations=kept, skipped_relations=merge_skips + cycle_skips)  # 合并两类跳过记录，返回完整图。
