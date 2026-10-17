@@ -181,3 +181,22 @@ def test_render_mermaid_from_normalized_result() -> None:  # 检查编号和箭�
   graph = build_plan_graph(plan_text, result)  # 按原文位置编号，并将关系的临时引用转换为编号。
   expected = 'flowchart LR\n  T1["联调"]\n  T2["接口"]\n  T2 --> T1\n'  # 接口虽编号为 T2，仍是箭头起点。
   assert mermaid.render_mermaid(graph) == expected  # 核对最终 Mermaid 文本。
+
+
+
+
+
+
+
+"""
+检查三个任务组成的依赖链。
+"""
+def test_render_mermaid_outputs_chain() -> None:  # 检查三个任务组成的依赖链。
+  first = GraphTask("T1", "设计", ("设计",), 0)  # 创建链的起点。
+  second = GraphTask("T2", "开发", ("开发",), 2)  # 创建链的中间任务。
+  third = GraphTask("T3", "验收", ("验收",), 4)  # 创建链的终点。
+  first_edge = GraphRelation("T1", "T2", "hard", "设计后开发", "设计先完成")  # 连接起点和中间任务。
+  second_edge = GraphRelation("T2", "T3", "hard", "开发后验收", "开发先完成")  # 连接中间任务和终点。
+  graph = PlanGraph((first, second, third), (second_edge, first_edge), ())  # 倒序传入关系以同时检查输出排序。
+  expected = 'flowchart LR\n  T1["设计"]\n  T2["开发"]\n  T3["验收"]\n  T1 --> T2\n  T2 --> T3\n'  # 写出预期的完整链。
+  assert mermaid.render_mermaid(graph) == expected  # 核对两个箭头的方向和顺序。
