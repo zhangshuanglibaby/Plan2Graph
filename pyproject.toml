@@ -7,7 +7,7 @@ name = "plan2graph" # 安装后的项目名称。
 version = "0.0.1" # 当前工程骨架的版本号。
 description = "Plan2Graph 最小命令行骨架" # 简短说明。
 requires-python = ">=3.11" # 要求 Python 3.11 或更新版本。
-dependencies = ["pydantic>=2,<3"] # 使用 Pydantic 2 检查模型返回的数据字段和类型。
+dependencies = ["pydantic>=2,<3","openai>=1,<3"] # 使用 Pydantic 2 检查模型返回的数据字段和类型。# 增加后续连接 DeepSeek 所需的 Python SDK。
 
 [project.optional-dependencies] # 只在需要测试时安装的工具。
 test = ["pytest>=8,<10"] # pytest 用于运行自动测试。
