@@ -16,6 +16,10 @@ from plan2graph.normalize import build_plan_graph  # 复用已有的引文与图
 
 from pydantic import ValidationError  # 识别模型回答的 JSON 或字段校验错误。
 
+from pathlib import Path  # 定位 server 目录下的 .env 文件。
+
+from dotenv import load_dotenv  # 将 .env 中的配置加载给现有代码使用。
+
 
 """
 读取 DeepSeek 密钥，并在缺失时给出明确错误。
@@ -95,6 +99,7 @@ def get_deepseek_max_tokens() -> int:  # 读取模型回答的 token 数量上�
   - DeepSeek 客户端
 """
 def create_deepseek_client() -> OpenAI:  # 根据本地配置创建客户端，此时不发送请求。
+  load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env", override=False)  # 读取 server/.env，但不覆盖已有环境变量。
   return OpenAI(  # 配置客户端使用的密钥、地址和请求限制。
     api_key=get_deepseek_api_key(),  # 读取已检查过的环境变量密钥。
     base_url="https://api.deepseek.com",  # 指向 DeepSeek 的服务地址。

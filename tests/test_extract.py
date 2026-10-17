@@ -244,7 +244,7 @@ def test_deepseek_client_uses_deepseek_endpoint(monkeypatch: pytest.MonkeyPatch)
 检查创建客户端时不能缺少密钥。
 """
 def test_deepseek_client_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> None:  # 检查创建客户端时不能缺少密钥。
-  monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)  # 只在本次测试中移除密钥配置。
+  monkeypatch.setenv("DEEPSEEK_API_KEY", "")  # 用空值模拟缺少密钥，避免测试从真实 .env 补入密钥。
   with pytest.raises(ValueError, match="DEEPSEEK_API_KEY"):  # 要求错误明确指出缺少的配置项。
     create_deepseek_client()  # 尝试创建客户端，不发送网络请求。
 
