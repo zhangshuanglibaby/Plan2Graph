@@ -8,6 +8,12 @@ from openai import OpenAI  # 导入用于创建 DeepSeek 兼容客户端的 SDK 
 
 from openai.types.chat import ChatCompletion  # 标注 SDK 返回的完整响应类型。
 
+from plan2graph.response_models import ModelResult  # 使用已有的严格响应数据模型。
+
+from plan2graph.models import PlanGraph  # 标注最终返回的任务图类型。
+
+from plan2graph.normalize import build_plan_graph  # 复用已有的引文与图结构检查。
+
 
 """
 读取 DeepSeek 密钥，并在缺失时给出明确错误。
@@ -146,6 +152,42 @@ def request_deepseek_completion(plan_text: str, client: OpenAI) -> ChatCompletio
     max_tokens=get_deepseek_max_tokens(),  # 限制输出 token 数量。
     response_format={"type": "json_object"},  # 要求 JSON 格式。
   )  # 结束请求参数。
+  if not response.choices:  # 没有回答选项时，不能把响应当作成功结果。
+    raise RuntimeError("DeepSeek 空响应：没有回答选项")  # 明确报告空响应。
   if response.choices and response.choices[0].finish_reason == "length":  # 检查回答是否因长度限制被截断。
     raise RuntimeError("DeepSeek 响应被截断")  # 阻止不完整回答进入后续流程。
+  if response.choices[0].finish_reason != "stop":  # 本轮只把明确标记为正常结束的回答视为完成。
+    raise RuntimeError("DeepSeek 回答结束状态异常")  # 拒绝结束状态缺失或其他未处理的状态。
+  if not response.choices[0].message.content:  # 正文为 None 或空字符串时，视为空响应。
+    raise RuntimeError("DeepSeek 空响应：没有回答正文")  # 不让缺少正文的响应进入后续解析。
   return response  # 返回未发现截断的完整响应，尚未解析 JSON。
+
+
+
+
+"""
+将完整响应解析为任务数据。
+输入：
+  - response: DeepSeek 响应
+输出：
+  - 任务数据
+"""
+def parse_deepseek_completion(response: ChatCompletion) -> ModelResult:  # 将完整响应解析为任务数据。
+  content = response.choices[0].message.content  # 读取第一个回答的 JSON 正文。
+  return ModelResult.model_validate_json(content)  # 解析 JSON，并校验必需字段和字段类型。
+
+
+
+
+"""
+串接请求、解析和任务图构建。
+输入：
+  - plan_text: 计划文本
+  - client: OpenAI 客户端
+输出：
+  - 任务图
+"""
+def extract_plan_graph(plan_text: str, client: OpenAI) -> PlanGraph:  # 串接请求、解析和任务图构建。
+  response = request_deepseek_completion(plan_text, client)  # 获取并检查假客户端返回的响应。
+  model_result = parse_deepseek_completion(response)  # 将回答正文解析为严格数据模型。
+  return build_plan_graph(plan_text, model_result)  # 核对原文引文并构建任务图。

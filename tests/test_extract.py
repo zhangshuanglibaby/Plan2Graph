@@ -5,6 +5,8 @@ from plan2graph.extract import build_extraction_messages, get_deepseek_api_key, 
 from unittest.mock import Mock  # 创建不会联网的假客户端。
 from openai import APIConnectionError, APIStatusError  # 导入 SDK 的连接错误类型和状态错误类型。
 from httpx import Request, Response  # 构造错误对象所需的假请求信息和响应信息。
+from plan2graph import extract  # 用模块名调用下一步要实现的响应解析函数。
+from pydantic import ValidationError  # 识别 JSON 解析或字段校验失败。
 
 
 """
@@ -319,3 +321,161 @@ def test_deepseek_request_preserves_api_status_error(monkeypatch: pytest.MonkeyP
   with pytest.raises(APIStatusError) as error:  # 检查错误类型仍是服务端状态错误。
     request_deepseek_completion("完成接口", client)  # 使用假客户端，不发送请求。
   assert error.value.status_code == 401  # 确认错误状态码没有丢失。
+
+
+
+
+
+"""
+检查没有任何回答选项时会报空响应。
+"""
+def test_deepseek_request_rejects_empty_choices(monkeypatch: pytest.MonkeyPatch) -> None:  # 检查没有任何回答选项时会报空响应。
+  monkeypatch.setenv("DEEPSEEK_MAX_TOKENS", "512")  # 固定有效配置，避免本机环境影响测试。
+  client = Mock()  # 创建不联网的假客户端。
+  client.chat.completions.create.return_value.choices = []  # 模拟响应中的回答选项列表为空。
+  with pytest.raises(RuntimeError, match="空响应"):  # 要求抛出包含“空响应”的错误。
+    request_deepseek_completion("完成接口", client)  # 检查请求函数如何处理假响应。
+
+
+
+
+
+"""
+检查回答没有正文时会报空响应。
+"""
+def test_deepseek_request_rejects_missing_content(monkeypatch: pytest.MonkeyPatch) -> None:  # 检查回答没有正文时会报空响应。
+  monkeypatch.setenv("DEEPSEEK_MAX_TOKENS", "512")  # 固定有效的离线测试配置。
+  client = Mock()  # 创建不联网的假客户端。
+  client.chat.completions.create.return_value.choices = [Mock(finish_reason="stop", message=Mock(content=None))]  # 模拟正常结束但没有正文的回答。
+  with pytest.raises(RuntimeError, match="空响应"):  # 要求明确报告空响应。
+    request_deepseek_completion("完成接口", client)  # 检查请求函数对假响应的处理。
+
+
+
+
+"""
+检查回答正文能解析成任务数据。
+"""
+def test_parses_deepseek_response_json() -> None:  # 检查回答正文能解析成任务数据。
+  content = '{"tasks":[{"ref":"a","title":"完成接口","source_quote":"完成接口"}],"relations":[]}'  # 模拟符合字段约定的 JSON 正文。
+  response = Mock(choices=[Mock(message=Mock(content=content))])  # 模拟不联网的 DeepSeek 响应。
+  result = extract.parse_deepseek_completion(response)  # 从响应中读取正文并解析。
+  assert result.tasks[0].title == "完成接口"  # 确认任务字段被读取。
+  assert result.relations == []  # 确认空关系列表被保留。
+
+
+
+"""
+检查不完整的回答正文不能被解析成功。
+"""
+def test_rejects_incomplete_deepseek_response_json() -> None:  # 检查不完整的回答正文不能被解析成功。
+  response = Mock(choices=[Mock(message=Mock(content='{"tasks": ['))])  # 模拟写到一半的 JSON 正文。
+  with pytest.raises(ValidationError):  # 要求解析过程报告校验错误。
+    extract.parse_deepseek_completion(response)  # 只解析假响应，不调用 DeepSeek。
+
+
+
+
+
+"""
+检查响应缺少必需的关系列表时会失败。
+"""
+def test_rejects_missing_relations_in_deepseek_response() -> None:  # 检查响应缺少必需的关系列表时会失败。
+  response = Mock(choices=[Mock(message=Mock(content='{"tasks":[]}'))])  # 模拟合法 JSON，但故意省略 relations。
+  with pytest.raises(ValidationError) as error:  # 捕获严格数据模型的校验错误。
+    extract.parse_deepseek_completion(response)  # 解析假响应，不调用网络。
+  assert error.value.errors()[0]["loc"] == ("relations",)  # 确认报错针对缺失的 relations 字段。
+
+
+
+
+"""
+检查完整抽取流程拒绝不存在的任务引文。
+"""
+def test_extract_plan_graph_rejects_fake_task_quote(monkeypatch: pytest.MonkeyPatch) -> None:  # 检查完整抽取流程拒绝不存在的任务引文。
+  monkeypatch.setenv("DEEPSEEK_MAX_TOKENS", "512")  # 固定有效的离线请求配置。
+  content = '{"tasks":[{"ref":"a","title":"完成接口","source_quote":"不存在的任务"}],"relations":[]}'  # 模拟 JSON 合法但引文造假的回答。
+  client = Mock()  # 创建不联网的假客户端。
+  client.chat.completions.create.return_value.choices = [Mock(finish_reason="stop", message=Mock(content=content))]  # 提供正常结束的假响应。
+  with pytest.raises(ValueError, match="任务引文不在原文中"):  # 要求明确拒绝伪造引文。
+    extract.extract_plan_graph("完成接口", client)  # 原文并不包含“​​不存在的任务”。
+
+
+
+
+
+"""
+检查合法响应能生成任务图。
+"""
+def test_extract_plan_graph_builds_task_from_valid_response(monkeypatch: pytest.MonkeyPatch) -> None:  # 检查合法响应能生成任务图。
+  monkeypatch.setenv("DEEPSEEK_MAX_TOKENS", "512")  # 固定有效的离线请求配置。
+  content = '{"tasks":[{"ref":"a","title":"完成接口","source_quote":"完成接口"}],"relations":[]}'  # 模拟引文确实来自原文的回答。
+  client = Mock()  # 创建不联网的假客户端。
+  client.chat.completions.create.return_value.choices = [Mock(finish_reason="stop", message=Mock(content=content))]  # 提供正常结束的假响应。
+  graph = extract.extract_plan_graph("完成接口", client)  # 将原文和假响应整理成任务图。
+  assert len(graph.tasks) == 1  # 确认图中有一个任务。
+  assert graph.tasks[0].id == "T1"  # 确认程序分配了稳定编号。
+  assert graph.tasks[0].title == "完成接口"  # 确认任务标题被保留。
+  assert graph.relations == ()  # 没有关系时，图中的关系列表为空。
+
+
+
+
+"""
+检查完整流程拒绝伪造的关系引文。
+"""
+def test_extract_plan_graph_rejects_fake_relation_quote(monkeypatch: pytest.MonkeyPatch) -> None:  # 检查完整流程拒绝伪造的关系引文。
+  monkeypatch.setenv("DEEPSEEK_MAX_TOKENS", "512")  # 固定有效的离线请求配置。
+  plan_text = "完成接口。验证接口依赖完成接口。"  # 提供包含两个任务及真实依赖表述的原文。
+  content = json.dumps({  # 构造字段完整的假回答。
+    "tasks": [  # 提供两个引文真实存在的任务。
+      {"ref": "a", "title": "完成接口", "source_quote": "完成接口"},  # 定义前置任务。
+      {"ref": "b", "title": "验证接口", "source_quote": "验证接口"},  # 定义后续任务。
+    ],  # 结束任务列表。
+    "relations": [  # 提供一条引文不在原文中的关系。
+      {"before": "a", "after": "b", "kind": "hard", "source_quote": "验证接口依赖支付对接", "reason": "假设存在依赖"},  # 故意伪造关系引文。
+    ],  # 结束关系列表。
+  }, ensure_ascii=False)  # 转为 JSON 正文并保留中文。
+  client = Mock()  # 创建不联网的假客户端。
+  client.chat.completions.create.return_value.choices = [Mock(finish_reason="stop", message=Mock(content=content))]  # 提供正常结束的假响应。
+  with pytest.raises(ValueError, match="关系引文不在原文中"):  # 要求指出关系证据不存在。
+    extract.extract_plan_graph(plan_text, client)  # 经过请求、解析和原文引文检查。
+
+
+
+
+
+"""
+检查有原文引文的依赖能进入任务图。
+"""
+def test_extract_plan_graph_keeps_supported_dependency(monkeypatch: pytest.MonkeyPatch) -> None:  # 检查有原文引文的依赖能进入任务图。
+  monkeypatch.setenv("DEEPSEEK_MAX_TOKENS", "512")  # 固定有效的离线请求配置。
+  plan_text = "完成接口。验证接口依赖完成接口。"  # 提供包含明确依赖表述的原文。
+  content = json.dumps({  # 构造符合字段约定的假回答。
+    "tasks": [  # 提供两个任务。
+      {"ref": "a", "title": "完成接口", "source_quote": "完成接口"},  # 定义前置任务。
+      {"ref": "b", "title": "验证接口", "source_quote": "验证接口"},  # 定义后续任务。
+    ],  # 结束任务列表。
+    "relations": [  # 提供一条关系。
+      {"before": "a", "after": "b", "kind": "hard", "source_quote": "验证接口依赖完成接口", "reason": "原文明确写出依赖"},  # 引用原文中的依赖表述。
+    ],  # 结束关系列表。
+  }, ensure_ascii=False)  # 转成 JSON 正文。
+  client = Mock()  # 创建不联网的假客户端。
+  client.chat.completions.create.return_value.choices = [Mock(finish_reason="stop", message=Mock(content=content))]  # 提供正常结束的假响应。
+  graph = extract.extract_plan_graph(plan_text, client)  # 得到经过引文和结构检查的任务图。
+  assert len(graph.relations) == 1  # 确认关系被保留。
+  assert (graph.relations[0].before, graph.relations[0].after, graph.relations[0].kind) == ("T1", "T2", "hard")  # 确认方向、编号和类型。
+
+
+
+
+
+"""
+检查缺少结束状态的回答不能视为完成。
+"""
+def test_deepseek_request_rejects_missing_finish_reason(monkeypatch: pytest.MonkeyPatch) -> None:  # 检查缺少结束状态的回答不能视为完成。
+  monkeypatch.setenv("DEEPSEEK_MAX_TOKENS", "512")  # 固定有效的离线请求配置。
+  client = Mock()  # 创建不联网的假客户端。
+  client.chat.completions.create.return_value.choices = [Mock(finish_reason=None, message=Mock(content='{"tasks":[],"relations":[]}'))]  # 模拟有正文但没有结束状态。
+  with pytest.raises(RuntimeError, match="结束状态"):  # 要求明确报告结束状态异常。
+    request_deepseek_completion("完成接口", client)  # 只检查请求响应，不调用真实服务。
