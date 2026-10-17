@@ -310,6 +310,35 @@ def test_deepseek_request_preserves_connection_error(monkeypatch: pytest.MonkeyP
 
 
 
+
+"""
+检查连续连接失败时的请求上限。
+"""
+def test_deepseek_request_stops_after_two_connection_failures(monkeypatch: pytest.MonkeyPatch) -> None:  # 检查连续连接失败时的请求上限。
+  monkeypatch.setenv("DEEPSEEK_MAX_TOKENS", "512")  # 固定有效的离线配置。
+  client = Mock()  # 创建不联网的假客户端。
+  client.chat.completions.create.side_effect = APIConnectionError(request=Request("POST", "https://api.deepseek.com/chat/completions"))  # 让每次请求都发生连接错误。
+  with pytest.raises(APIConnectionError):  # 两次失败后仍应把连接错误交给调用方。
+    request_deepseek_completion("完成接口", client)  # 执行请求函数。
+  assert client.chat.completions.create.call_count == 2  # 确认没有发生第三次请求。
+
+
+
+"""
+检查首次连接失败后能再请求一次。
+"""
+def test_deepseek_request_retries_one_connection_failure(monkeypatch: pytest.MonkeyPatch) -> None:  # 检查首次连接失败后能再请求一次。
+  monkeypatch.setenv("DEEPSEEK_MAX_TOKENS", "512")  # 固定有效配置，避免本机环境影响。
+  client = Mock()  # 创建不会访问网络的假客户端。
+  error = APIConnectionError(request=Request("POST", "https://api.deepseek.com/chat/completions"))  # 模拟第一次请求的连接错误。
+  successful_response = Mock(choices=[Mock(finish_reason="stop", message=Mock(content='{"tasks":[{"ref":"a","title":"完成接口","source_quote":"完成接口"}],"relations":[]}'))])  # 模拟第二次请求正常返回非空正文。
+  client.chat.completions.create.side_effect = [error, successful_response]  # 让两次调用依次得到错误和正常响应。
+  response = request_deepseek_completion("完成接口", client)  # 执行被测试的请求函数。
+  assert response is successful_response  # 确认返回的是第二次的响应。
+  assert client.chat.completions.create.call_count == 2  # 确认总共恰好请求两次。
+
+
+
 """
 检查服务端拒绝不会被误报为缺少密钥。
 """
@@ -321,6 +350,7 @@ def test_deepseek_request_preserves_api_status_error(monkeypatch: pytest.MonkeyP
   with pytest.raises(APIStatusError) as error:  # 检查错误类型仍是服务端状态错误。
     request_deepseek_completion("完成接口", client)  # 使用假客户端，不发送请求。
   assert error.value.status_code == 401  # 确认错误状态码没有丢失。
+  assert client.chat.completions.create.call_count == 1  # 认证失败时不发起第二次请求。
 
 
 
@@ -399,6 +429,25 @@ def test_extract_plan_graph_rejects_fake_task_quote(monkeypatch: pytest.MonkeyPa
   client.chat.completions.create.return_value.choices = [Mock(finish_reason="stop", message=Mock(content=content))]  # 提供正常结束的假响应。
   with pytest.raises(ValueError, match="任务引文不在原文中"):  # 要求明确拒绝伪造引文。
     extract.extract_plan_graph("完成接口", client)  # 原文并不包含“​​不存在的任务”。
+  assert client.chat.completions.create.call_count == 2  # 首次回答和一次修复都无效时，不再发起第三次请求。
+
+
+
+
+"""
+检查任务引文错误能通过一次修复请求纠正。
+"""
+def test_extract_plan_graph_repairs_fake_task_quote_once(monkeypatch: pytest.MonkeyPatch) -> None:  # 检查任务引文错误能通过一次修复请求纠正。
+  monkeypatch.setenv("DEEPSEEK_MAX_TOKENS", "512")  # 固定有效的离线配置。
+  client = Mock()  # 创建不联网的假客户端。
+  invalid = Mock(choices=[Mock(finish_reason="stop", message=Mock(content='{"tasks":[{"ref":"a","title":"完成接口","source_quote":"不存在的任务"}],"relations":[]}'))])  # 首次回答使用原文中没有的引文。
+  corrected = Mock(choices=[Mock(finish_reason="stop", message=Mock(content='{"tasks":[{"ref":"a","title":"完成接口","source_quote":"完成接口"}],"relations":[]}'))])  # 第二次回答改用真实原文片段。
+  client.chat.completions.create.side_effect = [invalid, corrected]  # 依次返回错误和修正后的假响应。
+  graph = extract.extract_plan_graph("完成接口", client)  # 尝试构建任务图。
+  assert graph.tasks[0].title == "完成接口"  # 确认修正后的任务进入图中。
+  assert client.chat.completions.create.call_count == 2  # 确认只增加一次修复请求。
+  repair_messages = client.chat.completions.create.call_args_list[1].kwargs["messages"]  # 读取第二次请求携带的消息。
+  assert "任务引文不在原文中" in repair_messages[-1]["content"]  # 确认修复提示指出实际错误。
 
 
 
@@ -417,6 +466,37 @@ def test_extract_plan_graph_builds_task_from_valid_response(monkeypatch: pytest.
   assert graph.tasks[0].id == "T1"  # 确认程序分配了稳定编号。
   assert graph.tasks[0].title == "完成接口"  # 确认任务标题被保留。
   assert graph.relations == ()  # 没有关系时，图中的关系列表为空。
+
+
+
+
+"""
+检查字段缺失后最多通过一次修复请求取得有效任务图。
+"""
+def test_extract_plan_graph_repairs_missing_relations_once(monkeypatch: pytest.MonkeyPatch) -> None:  # 检查字段缺失后最多通过一次修复请求取得有效任务图。
+  monkeypatch.setenv("DEEPSEEK_MAX_TOKENS", "512")  # 固定有效的离线配置。
+  client = Mock()  # 创建不联网的假客户端。
+  invalid = Mock(choices=[Mock(finish_reason="stop", message=Mock(content='{"tasks":[{"ref":"a","title":"完成接口","source_quote":"完成接口"}]}'))])  # 第一次响应故意缺少 relations。
+  corrected = Mock(choices=[Mock(finish_reason="stop", message=Mock(content='{"tasks":[{"ref":"a","title":"完成接口","source_quote":"完成接口"}],"relations":[]}'))])  # 第二次响应补全必需字段。
+  client.chat.completions.create.side_effect = [invalid, corrected]  # 按顺序提供两次假响应。
+  graph = extract.extract_plan_graph("完成接口", client)  # 尝试从响应构建任务图。
+  assert graph.tasks[0].title == "完成接口"  # 确认使用修复后的结果。
+  assert client.chat.completions.create.call_count == 2  # 确认总请求次数为两次。
+
+
+
+
+"""
+检查结构修复失败后不会请求第三次。
+"""
+def test_extract_plan_graph_stops_after_one_failed_structure_repair(monkeypatch: pytest.MonkeyPatch) -> None:  # 检查结构修复失败后不会请求第三次。
+  monkeypatch.setenv("DEEPSEEK_MAX_TOKENS", "512")  # 固定有效的离线配置。
+  client = Mock()  # 创建不联网的假客户端。
+  invalid = Mock(choices=[Mock(finish_reason="stop", message=Mock(content='{"tasks":[{"ref":"a","title":"完成接口","source_quote":"完成接口"}]}'))])  # 模拟始终缺少 relations 的响应。
+  client.chat.completions.create.return_value = invalid  # 每次请求都返回同一份无效结构。
+  with pytest.raises(ValueError, match="^结构修复失败：relations$"):  # 要求第二次失败时只报告简短的出错字段。
+    extract.extract_plan_graph("完成接口", client)  # 首次请求和一次修复都收到无效结构。
+  assert client.chat.completions.create.call_count == 2  # 确认没有第三次结构修复请求。
 
 
 
