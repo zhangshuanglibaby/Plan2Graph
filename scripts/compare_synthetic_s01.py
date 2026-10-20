@@ -1,4 +1,4 @@
-"""采集 S01 合成计划的两路模型原始结果；运行才会发送该计划原文。"""
+"""采集 S01–S05 合成计划的两路模型原始结果；运行才会发送所选原文。"""
 
 import hashlib  # 为实际读取的输入与固定提示词计算指纹。
 import json  # 保存请求、响应及运行元数据。
@@ -20,8 +20,14 @@ from plan2graph import extract  # 复用现有的模型配置、抽取和校验�
 from plan2graph.cli import get_max_input_chars  # 沿用命令行的输入长度限制。
 from plan2graph.mermaid import render_mermaid  # 沿用正式的 Mermaid 生成逻辑。
 
-INPUT = SERVER / "doc/阶段5.3-合成演练输入/01-客户名单导入-合成计划.md"  # 唯一允许发送的合成输入。
+INPUT = SERVER / "doc/阶段5.3-合成演练输入/01-客户名单导入-合成计划.md"  # 无参数时允许发送的 S01 合成输入。
 INPUT_SHA256 = "b486ad3b1a05c490f349ca5cb68f08bd3e3f162fcdf84afb60e2f8c125f9e838"  # 锁定已获授权的 S01 字节。
+ADDITIONAL_CASES = {  # 仅增加已核对指纹、由助手编写的四份合成计划。
+    "S02": ("02-预约改期-合成计划.md", "1dde77d87f3b2b88b0775f9a1e5f1dc58f987ad688f37f8425145d72ff70083b"),  # 固定 S02 的文件和原始字节。
+    "S03": ("03-库存预警-合成计划.md", "f167d70f832f36b811c0c9b9b9a06ac9106c380903b27b20810ee4d75990374e"),  # 固定 S03 的文件和原始字节。
+    "S04": ("04-工单附件-合成计划.md", "300ceb9d89a2cf8da62efd4c419266747ecaa15d28a173b628b6ab9fa777a709"),  # 固定 S04 的文件和原始字节。
+    "S05": ("05-功能开关发布-合成计划.md", "b6659cd4a97e910d1b9d3fe1c6028aae029f93ec2248bdd5f8db4648a569ea72"),  # 固定 S05 的文件和原始字节。
+}  # 未列明的原文不能通过此脚本传输。
 PROMPT = SERVER / "doc/阶段5.3-合成演练-直接生成Mermaid提示词.md"  # 读取先前冻结的提示词版本。
 RESULTS = SERVER / ".local/phase5_3_s01"  # 本地原始数据不会被 Git 跟踪。
 
@@ -136,28 +142,37 @@ def run_direct(text: str, system_prompt: str, completions: RecordingCompletions,
         arm["status"] = "failed"  # 不把失败结果算入成功样例。
 
 
-def main() -> int:  # 只执行 S01 合成演练，不接收其他输入参数。
-    if len(sys.argv) != 1:  # 禁止通过命令行指定 S02–S05 或其他原文。
-        raise ValueError("本脚本不接受参数，只允许 S01")  # 在创建客户端之前拒绝。
-    data = INPUT.read_bytes()  # 只读取已授权的固定 S01 文件。
+def select_case(argv: list[str]) -> tuple[str, Path, str, Path]:  # 明确选取一个受指纹约束的合成样例。
+    if len(argv) == 1:  # 保留旧脚本默认运行 S01 的行为。
+        return "S01", INPUT, INPUT_SHA256, RESULTS  # 测试与此前采集路径保持有效。
+    if len(argv) != 3 or argv[1] != "--case" or argv[2] not in ADDITIONAL_CASES:  # 禁止任意文件路径或未知编号。
+        raise ValueError("仅支持 --case S02、S03、S04、S05；无参数时为 S01")  # 在读取原文和创建客户端前拒绝。
+    case = argv[2]  # 此时编号属于固定白名单。
+    filename, expected_hash = ADDITIONAL_CASES[case]  # 从静态映射取得文件名及指纹。
+    return case, INPUT.parent / filename, expected_hash, SERVER / f".local/phase5_3_{case.lower()}"  # 各例独立保存原始现场。
+
+
+def main() -> int:  # 一次仅执行一份合成计划的双路采集。
+    case, input_path, expected_hash, results = select_case(sys.argv)  # 先核对参数对应固定输入。
+    data = input_path.read_bytes()  # 只读取当前选择的合成文件。
     actual_hash = sha256(data)  # 对实际读取的字节核对指纹。
-    if actual_hash != INPUT_SHA256:  # 文本发生变化就必须重新确认传输范围。
-        raise ValueError("S01 内容指纹已改变；停止模型调用")  # 不发送未获授权的新版本。
+    if actual_hash != expected_hash:  # 文本发生变化就必须重新确认传输范围。
+        raise ValueError(f"{case} 内容指纹已改变；停止模型调用")  # 不发送变更后的新版本。
     text = data.decode("utf-8")  # 不改写完整计划原文。
     if not text.strip() or len(text) > get_max_input_chars():  # 沿用正式 CLI 的空文本和长度边界。
-        raise ValueError("S01 为空或超出当前输入字符数上限")  # 请求前退出。
+        raise ValueError(f"{case} 为空或超出当前输入字符数上限")  # 请求前退出。
     system_prompt, prompt_hash = load_direct_prompt()  # 固定直接生成的 system 文本。
     max_tokens = extract.get_deepseek_max_tokens()  # 验证当前配置的输出上限。
     client = extract.create_deepseek_client()  # 读取本地配置但尚未发送请求。
     try:  # 保证模型运行结束后关闭网络客户端。
         model_alias = extract.get_deepseek_model()  # 把别名和已确认服务端版本分开记录。
         timeout_seconds = extract.get_deepseek_timeout_seconds()  # 记录两侧共用的显式客户端超时。
-        RESULTS.mkdir(mode=0o700, parents=True, exist_ok=True)  # 将原始请求和响应保存在本地私有目录。
-        output = RESULTS / f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{uuid4().hex}.json"  # 为每次运行建立独立记录。
+        results.mkdir(mode=0o700, parents=True, exist_ok=True)  # 将原始请求和响应保存在本地私有目录。
+        output = results / f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{uuid4().hex}.json"  # 为每次运行建立独立记录。
         record = {  # 先写运行元信息，后按请求逐次补充。
-            "case": "S01",  # 不把合成计划标为真实 Agent 计划。
+            "case": case,  # 不把合成计划标为真实 Agent 计划。
             "source": "assistant_synthetic_not_stage_5_3_acceptance",  # 标明仅供流程演练。
-            "input_path": str(INPUT),  # 保存输入的绝对位置。
+            "input_path": str(input_path),  # 保存输入的绝对位置。
             "input_sha256": actual_hash,  # 保存实际读取字节的指纹。
             "direct_prompt_version": "direct-mermaid-v1",  # 保存冻结的提示词版本。
             "direct_prompt_document_sha256": prompt_hash,  # 保存提示词文档的内容指纹。

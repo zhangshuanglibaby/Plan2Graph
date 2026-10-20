@@ -30,6 +30,29 @@ def test_changed_s01_stops_before_client_creation(tmp_path: Path, monkeypatch: p
     client_factory.assert_not_called()  # 确认没有模型客户端或请求。
 
 
+def test_unknown_case_stops_before_client_creation(monkeypatch: pytest.MonkeyPatch) -> None:  # 未列入白名单的输入不能被发送。
+    collector = load_collector()  # 加载只包含固定样例的采集器。
+    monkeypatch.setattr(sys, "argv", ["compare_synthetic_s01.py", "--case", "S06"])  # 试图选择不存在的编号。
+    client_factory = Mock(side_effect=AssertionError("不应创建模型客户端"))  # 防止误触模型客户端。
+    monkeypatch.setattr(collector.extract, "create_deepseek_client", client_factory)  # 在离线测试中拦截客户端。
+    with pytest.raises(ValueError, match="仅支持"):  # 未知编号须在请求前拒绝。
+        collector.main()  # 执行入口的参数门禁。
+    client_factory.assert_not_called()  # 确认没有外部调用。
+
+
+def test_changed_s02_stops_before_client_creation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # 新增样例也须核对实际读取的字节。
+    collector = load_collector()  # 加载待测采集器。
+    changed_input = tmp_path / "02-预约改期-合成计划.md"  # 使用本地临时文件模拟被改动的 S02。
+    changed_input.write_text("合成文本被改动", encoding="utf-8")  # 准备不匹配的原文。
+    monkeypatch.setattr(collector, "INPUT", tmp_path / "01.md")  # 将新增样例定位到临时目录。
+    monkeypatch.setattr(sys, "argv", ["compare_synthetic_s01.py", "--case", "S02"])  # 只选择固定编号。
+    client_factory = Mock(side_effect=AssertionError("不应创建模型客户端"))  # 保证测试不联网。
+    monkeypatch.setattr(collector.extract, "create_deepseek_client", client_factory)  # 拦截客户端构建。
+    with pytest.raises(ValueError, match="S02 内容指纹已改变"):  # 内容变化必须停止传输。
+        collector.main()  # 从受控临时路径读取变更的输入。
+    client_factory.assert_not_called()  # 验证请求没有发生。
+
+
 def test_request_failure_keeps_redacted_local_record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # 每次失败都留下脱敏现场。
     collector = load_collector()  # 加载不会自动运行的采集器。
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-secret-only")  # 用测试字符串模拟可能泄漏的密钥。
